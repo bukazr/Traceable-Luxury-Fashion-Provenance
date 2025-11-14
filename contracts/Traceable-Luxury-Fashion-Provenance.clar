@@ -8,6 +8,7 @@
 (define-constant err-invalid-stage (err u104))
 (define-constant err-unauthorized (err u105))
 (define-constant err-invalid-origin (err u106))
+(define-constant err-warranty-expired (err u107))
 
 (define-non-fungible-token luxury-garment uint)
 
@@ -49,6 +50,16 @@
 
 (define-map ownership-history-count uint uint)
 
+(define-map garment-warranty
+    uint
+    {
+        warranty-start: uint,
+        warranty-duration-blocks: uint,
+        certification-expiry: uint,
+        warranty-provider: principal
+    }
+)
+
 (define-read-only (get-last-token-id)
     (ok (var-get token-id-nonce))
 )
@@ -79,6 +90,45 @@
 
 (define-read-only (get-ownership-history-length (token-id uint))
     (ok (default-to u0 (map-get? ownership-history-count token-id)))
+)
+
+(define-read-only (get-warranty-info (token-id uint))
+    (ok (map-get? garment-warranty token-id))
+)
+
+(define-read-only (is-warranty-valid (token-id uint))
+    (let
+        (
+            (warranty (unwrap! (map-get? garment-warranty token-id) err-token-not-found))
+            (current-time (unwrap-panic (get-stacks-block-info? time burn-block-height)))
+            (warranty-end (+ (get warranty-start warranty) (get warranty-duration-blocks warranty)))
+        )
+        (ok (< current-time warranty-end))
+    )
+)
+
+(define-read-only (is-certification-valid (token-id uint))
+    (let
+        (
+            (warranty (unwrap! (map-get? garment-warranty token-id) err-token-not-found))
+            (current-time (unwrap-panic (get-stacks-block-info? time burn-block-height)))
+        )
+        (ok (< current-time (get certification-expiry warranty)))
+    )
+)
+
+(define-read-only (get-warranty-blocks-remaining (token-id uint))
+    (let
+        (
+            (warranty (unwrap! (map-get? garment-warranty token-id) err-token-not-found))
+            (current-time (unwrap-panic (get-stacks-block-info? time burn-block-height)))
+            (warranty-end (+ (get warranty-start warranty) (get warranty-duration-blocks warranty)))
+        )
+        (if (> warranty-end current-time)
+            (ok (- warranty-end current-time))
+            (ok u0)
+        )
+    )
 )
 
 (define-public (mint-garment 
@@ -222,6 +272,40 @@
         (asserts! (or (is-eq tx-sender contract-owner) (default-to false (map-get? authorized-verifiers tx-sender))) err-unauthorized)
         (ok (map-set garment-metadata token-id
             (merge metadata { ethical-certified: certified })
+        ))
+    )
+)
+
+(define-public (set-warranty 
+    (token-id uint)
+    (warranty-duration-blocks uint)
+    (certification-expiry uint))
+    (let
+        (
+            (current-time (unwrap-panic (get-stacks-block-info? time burn-block-height)))
+        )
+        (asserts! (or (is-eq tx-sender contract-owner) (default-to false (map-get? authorized-verifiers tx-sender))) err-unauthorized)
+        (asserts! (is-some (nft-get-owner? luxury-garment token-id)) err-token-not-found)
+        (ok (map-set garment-warranty token-id {
+            warranty-start: current-time,
+            warranty-duration-blocks: warranty-duration-blocks,
+            certification-expiry: certification-expiry,
+            warranty-provider: tx-sender
+        }))
+    )
+)
+
+(define-public (extend-warranty 
+    (token-id uint)
+    (additional-blocks uint))
+    (let
+        (
+            (warranty (unwrap! (map-get? garment-warranty token-id) err-token-not-found))
+            (new-duration (+ (get warranty-duration-blocks warranty) additional-blocks))
+        )
+        (asserts! (or (is-eq tx-sender contract-owner) (default-to false (map-get? authorized-verifiers tx-sender))) err-unauthorized)
+        (ok (map-set garment-warranty token-id
+            (merge warranty { warranty-duration-blocks: new-duration })
         ))
     )
 )
